@@ -1,7 +1,8 @@
 #include <MFRC522.h>
 #include <SPI.h>
 #include <RobotixInnoBot.h>
-MFRC522 rfid(10, 9);  //ss,rst
+
+MFRC522 rfid(10, 9);  // SS_PIN = 10, RST_PIN = 9
 RobotixInnoBot bot;
 MFRC522::MIFARE_Key key;
 
@@ -10,15 +11,22 @@ MFRC522::MIFARE_Key key;
 #define btn3 PIN_BTN_3
 #define btn4 PIN_BTN_4
 
-byte boss_uid[4] = { 0x27, 0xa4, 0xf5, 0x05 };
-byte employe_uid[3][4] = { 0x96, 0xff, 0x19, 0x6a };
+// Master Card (Boss) UID
+byte boss_uid[4] = { 0x27, 0xA4, 0xF5, 0x05 };
+
+// Employee Cards UID List (Up to 3 Employees)
+byte employe_uid[3][4] = {
+  { 0x96, 0xFF, 0x19, 0x6A },
+  { 0x00, 0x00, 0x00, 0x00 },
+  { 0x00, 0x00, 0x00, 0x00 }
+};
 
 void setup() {
   bot.begin();
   SPI.begin();
   rfid.PCD_Init();
   for (int i = 0; i < 6; i++) {
-    key.keyByte[i] = 0xff;
+    key.keyByte[i] = 0xFF;
   }
   bot.clearLCD();
 }
@@ -27,43 +35,61 @@ void loop() {
   bot.drawString(0, 0, "Enter Card", FONT_SMALL);
   if (!rfid.PICC_IsNewCardPresent()) return;
   if (!rfid.PICC_ReadCardSerial()) return;
+  
   rfid.PICC_HaltA();
   rfid.PCD_StopCrypto1();
-  if (whoISthat() == "boss") setting();
-  else if (whoISthat() == "employee") open_door();
-  else alarm();
+  
+  String role = whoISthat();
+  if (role == "boss") {
+    setting();
+  } else if (role == "employee") {
+    open_door();
+  } else {
+    alarm();
+  }
 }
 
 String whoISthat() {
-  String client;
-  bool correct = false;
+  // 1. Check if the card belongs to Boss (All 4 bytes must match)
+  bool isBoss = true;
   for (int i = 0; i < 4; i++) {
-    if (rfid.uid.uidByte[i] == boss_uid[i]) client = "boss";
-    else client = "";
-  }
-  if (client == "boss") return client;
-  for (int id = 0; id < 3; id++) {
-    for (int i = 0; i < 4; i++) {
-      if (rfid.uid.uidByte[i] == employe_uid[id][i]) client = "employee";  //shoud FIX ID
-      else client = "";
+    if (rfid.uid.uidByte[i] != boss_uid[i]) {
+      isBoss = false;
+      break;
     }
-  if (client == "employee") return client;
+  }
+  if (isBoss) return "boss";
 
+  // 2. Check if the card belongs to an Employee
+  for (int id = 0; id < 3; id++) {
+    if (!cشheck_id(id)) continue; // Skip empty ID slots
+    
+    bool isEmployee = true;
+    for (int i = 0; i < 4; i++) {
+      if (rfid.uid.uidByte[i] != employe_uid[id][i]) {
+        isEmployee = false;
+        break;
+      }
+    }
+    if (isEmployee) return "employee";
   }
 
   return "wrong uid";
 }
 
 void setting() {
-  uint16_t current_time = millis();
-  uint16_t last_time = millis();
+  bot.clearLCD();
+  unsigned long current_time = millis();
+  unsigned long last_time = millis();
   int client_ID = 0;
   bool last_btn3 = true;
   char text[20];
   String client_UID = whatISuid(client_ID);
-  while (bot.readBTN(PIN_BTN_4) && (current_time - last_time < 10000)) {
+
+  while (bot.readBTN(btn4) && (current_time - last_time < 10000)) {
     sprintf(text, "ID: %d ", client_ID + 1);
     bot.drawString(0, 0, text, FONT_SMALL);
+    
     client_UID.toCharArray(text, 20);
     bot.drawString(0, 1, "UID:", FONT_SMALL);
     bot.drawString(25, 1, text, FONT_SMALL);
@@ -71,15 +97,17 @@ void setting() {
     showLCD();
     current_time = millis();
     bool current_btn3 = bot.readBTN(btn3);
+
     if (!bot.readBTN(btn1)) {
       set_uid(client_ID);
+      client_UID = whatISuid(client_ID); // Refresh displayed UID immediately
       current_time = millis();
       last_time = millis();
     } else if (!bot.readBTN(btn2)) {
       rmv_uid(client_ID);
+      client_UID = whatISuid(client_ID); // Refresh displayed UID immediately
       current_time = millis();
       last_time = millis();
-
     } else if (current_btn3 != last_btn3) {
       if (current_btn3 == false) {
         current_time = millis();
@@ -93,22 +121,26 @@ void setting() {
   }
   bot.clearLCD();
 }
+
 void open_door() {
+  bot.clearLCD();
   bot.drawString(0, 4, "WELCOME", FONT_NORMAL);
   delay(3000);
   bot.clearLCD();
 }
+
 void alarm() {
+  bot.clearLCD();
   bot.drawString(15, 2, "!WARNING!", FONT_NORMAL);
   bot.drawString(0, 3, "Access is Denied.", FONT_SMALL);
-  
   delay(3000);
   bot.clearLCD();
 }
+
 String whatISuid(int ID) {
   String card_uid = "";
   for (int i = 0; i < 4; i++) {
-
+    if (employe_uid[ID][i] < 0x10) card_uid += "0"; // Leading zero for single hex digit
     card_uid += String(employe_uid[ID][i], HEX);
     card_uid += " ";
   }
@@ -116,119 +148,98 @@ String whatISuid(int ID) {
   bot.clearLCD();
   return card_uid;
 }
+
 void showLCD() {
   bot.drawString(0, 3, "sw1 :Change Tag", FONT_SMALL);
-  bot.drawString(0, 4, "sw2 :remove tag", FONT_SMALL);
-  bot.drawString(0, 5, "sw3 : Next", FONT_SMALL);
-  bot.drawString(0, 7, "sw4 : Exit", FONT_SMALL);
+  bot.drawString(0, 4, "sw2 :Remove Tag", FONT_SMALL);
+  bot.drawString(0, 5, "sw3 :Next", FONT_SMALL);
+  bot.drawString(0, 7, "sw4 :Exit", FONT_SMALL);
 }
+
 void set_uid(int ID) {
   bot.clearLCD();
-  uint16_t current_time, last_time;
+  unsigned long current_time, last_time;
   char text[20];
   bool card_change_check = false;
+
   sprintf(text, "Set ID%d", ID + 1);
   bot.drawString(0, 0, text, FONT_SMALL);
   delay(500);
+
   if (check_id(ID)) {
     bot.drawString(20, 1, "WARNING", FONT_NORMAL);
     bot.drawString(0, 2, "This ID is Full!", FONT_SMALL);
-    bot.drawString(0, 3, "You want set?", FONT_SMALL);
-    bot.drawString(0, 5, "confirm: SW1", FONT_SMALL);
-    bot.drawString(0, 6, "cancel: SW4", FONT_SMALL);
-    delay(1000);
+  }
+  
+  bot.drawString(0, 3, "You want set?", FONT_SMALL);
+  bot.drawString(0, 5, "confirm: SW1", FONT_SMALL);
+  bot.drawString(0, 6, "cancel: SW4", FONT_SMALL);
+  delay(1000);
+
+  current_time = millis();
+  last_time = millis();
+  while (bot.readBTN(btn4) && (current_time - last_time < 5000)) {
     current_time = millis();
-    last_time = millis();
-    while (bot.readBTN(btn4) && (current_time - last_time < 5000)) {
-      if (!bot.readBTN(btn1)) {
-        bot.clearLCD();
-        bot.drawString(0, 4, "Enter Tag to set", FONT_SMALL);
-        sprintf(text, "ID: %d", ID);
-        bot.drawString(0, 5, text, FONT_SMALL);
+    if (!bot.readBTN(btn1)) {
+      bot.clearLCD();
+      bot.drawString(0, 4, "Enter Tag to set", FONT_SMALL);
+      sprintf(text, "ID: %d", ID + 1);
+      bot.drawString(0, 5, text, FONT_SMALL);
+      
+      current_time = millis();
+      last_time = millis();
+      while (!rfid.PICC_IsNewCardPresent() && (current_time - last_time < 5000)) {
         current_time = millis();
-        last_time = millis();
-        while (!rfid.PICC_IsNewCardPresent() && (current_time - last_time < 5000)) {
-          current_time = millis();
-        }
-        bot.clearLCD();
-        if (rfid.PICC_ReadCardSerial()) {
-          for (int i = 0; i < 4; i++) {
-            employe_uid[ID][i] = rfid.uid.uidByte[i];
-          }
-          rfid.PICC_HaltA();
-          rfid.PCD_StopCrypto1();
-          card_change_check = true;
-        }
-        if (check_id(ID) && card_change_check) {
-          bot.drawString(0, 4, "Successful.", FONT_NORMAL);
-        } else {
-          bot.drawString(0, 4, "Failed.", FONT_NORMAL);
-        }
-        delay(3000);
-        break;
       }
-    }
-  } else {
-    bot.drawString(0, 3, "You want set?", FONT_SMALL);
-    bot.drawString(0, 5, "confirm: SW1", FONT_SMALL);
-    bot.drawString(0, 6, "cancel: SW4", FONT_SMALL);
-    delay(1000);
-    current_time = millis();
-    last_time = millis();
-    while (bot.readBTN(btn4) && (current_time - last_time < 5000)) {
-      if (!bot.readBTN(btn1)) {
-        bot.clearLCD();
-        bot.drawString(0, 4, "Enter Tag to set", FONT_SMALL);
-        sprintf(text, "ID: %d", ID);
-        bot.drawString(0, 5, text, FONT_SMALL);
-        current_time = millis();
-        last_time = millis();
-        while (!rfid.PICC_IsNewCardPresent() && (current_time - last_time < 5000)) {
-          current_time = millis();
+      
+      bot.clearLCD();
+      if (rfid.PICC_ReadCardSerial()) {
+        for (int i = 0; i < 4; i++) {
+          employe_uid[ID][i] = rfid.uid.uidByte[i];
         }
-        bot.clearLCD();
-        if (rfid.PICC_ReadCardSerial()) {
-          for (int i = 0; i < 4; i++) {
-            employe_uid[ID][i] = rfid.uid.uidByte[i];
-          }
-          card_change_check = true;
-        }
-        if (check_id(ID) && card_change_check) {
-          bot.drawString(0, 4, "Successful.", FONT_NORMAL);
-        } else {
-          bot.drawString(0, 4, "Failed.", FONT_NORMAL);
-        }
-        delay(3000);
-        break;
+        rfid.PICC_HaltA();
+        rfid.PCD_StopCrypto1();
+        card_change_check = true;
       }
+      
+      if (check_id(ID) && card_change_check) {
+        bot.drawString(0, 4, "Successful.", FONT_NORMAL);
+      } else {
+        bot.drawString(0, 4, "Failed.", FONT_NORMAL);
+      }
+      delay(3000);
+      break;
     }
   }
 }
+
 bool check_id(int ID) {
   int check = 0;
   for (int i = 0; i < 4; i++) {
     if (employe_uid[ID][i] == 0) check++;
   }
-  if (check == 4) return false;  //ID is Empty
-  else return true;              //ID is Full
+  return (check != 4); // false = Empty, true = Full
 }
+
 void rmv_uid(int ID) {
   bot.clearLCD();
   char text[20];
-  sprintf(text, "Removing ID:%d", ID);
+  sprintf(text, "Removing ID:%d", ID + 1);
   bot.drawString(0, 0, text, FONT_SMALL);
   delay(500);
+  
   bot.drawString(20, 1, "WARNING", FONT_NORMAL);
-  sprintf(text, "remove ID:%d?", ID);
+  sprintf(text, "remove ID:%d?", ID + 1);
   bot.drawString(0, 2, text, FONT_SMALL);
   bot.drawString(0, 3, "confirm :SW1", FONT_SMALL);
   bot.drawString(0, 4, "cancel :SW4", FONT_SMALL);
-  uint16_t current_time = millis();
-  uint16_t last_time = millis();
+  
+  unsigned long current_time = millis();
+  unsigned long last_time = millis();
   bool state = false;
+  
   while (bot.readBTN(btn4) && (current_time - last_time < 5000)) {
     current_time = millis();
-
     if (!bot.readBTN(btn1)) {
       for (int i = 0; i < 4; i++) {
         employe_uid[ID][i] = 0;
@@ -237,14 +248,13 @@ void rmv_uid(int ID) {
       break;
     }
   }
+  
+  bot.clearLCD();
   if (state) {
-    bot.clearLCD();
-    sprintf(text, "ID:%d Removed", ID);
+    sprintf(text, "ID:%d Removed", ID + 1);
     bot.drawString(0, 4, text, FONT_NORMAL);
   } else {
-    bot.clearLCD();
-    sprintf(text, "Canceled");
-    bot.drawString(15, 4, text, FONT_NORMAL);
+    bot.drawString(15, 4, "Canceled", FONT_NORMAL);
   }
   delay(3000);
   bot.clearLCD();
